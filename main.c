@@ -1,50 +1,90 @@
-#include "ssd1306.h"
-#include "stm32f10x.h"
+#include <stdint.h>
+#include <stm32f10x.h>
 
-void Peripherals_Init(void) {
-    // Включение тактирования
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_SPI1EN;
-
-    // Настройка SPI1 пинов: PA5=SCK, PA7=MOSI
-    GPIOA->CRL &= ~(GPIO_CRL_CNF5 | GPIO_CRL_MODE5 |
-                    GPIO_CRL_CNF7 | GPIO_CRL_MODE7);
-    GPIOA->CRL |= (GPIO_CRL_CNF5_1 | GPIO_CRL_MODE5 |  // PA5: Alternate Push-Pull, 50MHz
-                   GPIO_CRL_CNF7_1 | GPIO_CRL_MODE7);  // PA7: Alternate Push-Pull, 50MHz
-
-    // Настройка управляющих пинов: PA1=DC, PA4=CS, PA2=RES (Output, Push-Pull, 2MHz)
-    GPIOA->CRL &= ~(GPIO_CRL_CNF1 | GPIO_CRL_MODE1 |
-                    GPIO_CRL_CNF4 | GPIO_CRL_MODE4 |
-                    GPIO_CRL_CNF2 | GPIO_CRL_MODE2);
-    GPIOA->CRL |= (GPIO_CRL_MODE1_0 |   // PA1: Output, 2MHz
-                   GPIO_CRL_MODE4_0 |   // PA4: Output, 2MHz
-                   GPIO_CRL_MODE2_0);   // PA2: Output, 2MHz
-
-    // Установка начальных состояний
-    GPIOA->BSRR = GPIO_BSRR_BS4;  // CS = 1
-    GPIOA->BSRR = GPIO_BSRR_BS2;  // RES = 1
-
-    // Настройка SPI1
-    SPI1->CR1 = SPI_CR1_CPOL | SPI_CR1_CPHA |  // Полярность и фаза
-                SPI_CR1_MSTR |                 // Режим мастера
-                SPI_CR1_BR_0 | SPI_CR1_BR_1 | SPI_CR1_BR_2 | // Baudrate = fPCLK/256
-                SPI_CR1_SSM | SPI_CR1_SSI;     // Программное управление CS
-
-    SPI1->CR1 |= SPI_CR1_SPE; // Включение SPI
+void TIM2_IRQHandler(void) {
+    if (TIM2->SR & TIM_SR_UIF) {
+        GPIOC->ODR ^= (1U << 13U);
+        TIM2->SR &= ~TIM_SR_UIF;
+    }
 }
 
 int main(void) {
-    // SystemInit() вызывается автоматически до входа в main()
+    // Инициализация портов
+    RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPCEN;
 
-    // Инициализация нашей периферии
-    Peripherals_Init();
+    GPIOC->CRH &= ~GPIO_CRH_CNF13;
+    GPIOC->CRH |= GPIO_CRH_MODE13_0;
 
-    // Инициализация дисплея
-    SSD1306_Init();
+    GPIOA->CRL &= ~(GPIO_CRL_CNF0 | GPIO_CRL_MODE0);
+    GPIOA->CRL |= GPIO_CRL_CNF0_1;
+    GPIOA->ODR |= (1U << 0);
 
-    // Отображение тестового изображения
-    SSD1306_TestPattern();
+    GPIOA->CRL &= ~(GPIO_CRL_CNF1 | GPIO_CRL_MODE1);
+    GPIOA->CRL |= GPIO_CRL_CNF1_1;
+    GPIOA->ODR |= (1U << 1U);
 
-    while(1) {
-        // Основной цикл
+    // Инициализация таймера
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+
+    RCC->APB1RSTR |= RCC_APB1RSTR_TIM2RST;
+    RCC->APB1RSTR &= ~RCC_APB1RSTR_TIM2RST;
+
+    uint32_t psc_values[] = {
+        65535,
+        32767,
+        16383,
+        8191
+    };
+
+    uint8_t mode = 0;
+
+    TIM2->PSC = psc_values[mode];
+    TIM2->ARR = 1000;
+    TIM2->CNT = 0;
+
+    TIM2->DIER |= TIM_DIER_UIE;
+    NVIC_ClearPendingIRQ(TIM2_IRQn);
+    NVIC_EnableIRQ(TIM2_IRQn);
+
+    TIM2->CR1 |= TIM_CR1_CEN;
+
+    while (1) {
+        // Увелечение скорости
+        if (!(GPIOA->IDR & (1U << 0))) {
+            for (volatile uint32_t i = 0; i < 10000; i++);
+
+            if (!(GPIOA->IDR & (1U << 0))) {
+                if (mode < 3) {  // Если не максимальная скорость
+                    mode++;  // Увеличиваем скорость
+
+                    TIM2->PSC = TIM2->PSC >> 1;
+
+                    TIM2->EGR |= TIM_EGR_UG;
+                }
+
+                while (!(GPIOA->IDR & (1U << 0)));
+            }
+        }
+
+        // Уменьшение скорости
+        if (!(GPIOA->IDR & (1U << 1))) {
+            for (volatile uint32_t i = 0; i < 10000; i++);
+
+            if (!(GPIOA->IDR & (1U << 1))) {
+                if (mode > 0) {  // Если не минимальная скорость
+                    mode--;  // Уменьшаем скорость
+
+                    TIM2->PSC = TIM2->PSC << 1;  // ЗАМЕДЛЕНИЕ
+
+                    TIM2->EGR |= TIM_EGR_UG;
+                }
+
+                while (!(GPIOA->IDR & (1U << 1)));
+            }
+        }
+
+        __asm volatile ("nop");
     }
+
+    return 0;
 }
